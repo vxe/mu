@@ -1535,14 +1535,17 @@ previous header."
   (interactive "P")
   (mu4e~headers-move (- (or n 1))))
 
+(defun mu4e~headers-msg-unread (msg)
+  "Check if the given message is unread."
+  (let ((flags (mu4e-message-field msg :flags)))
+    (and (member 'unread flags) (not (member 'trashed flags)))))
+
 (defun mu4e~headers-prev-or-next-unread (backwards)
   "Move point to the next message that is unread (and
 untrashed). If BACKWARDS is non-`nil', move backwards."
   (interactive)
   (or (mu4e-headers-find-if-next
-	(lambda (msg)
-	  (let ((flags (mu4e-message-field msg :flags))) 
-	    (and (member 'unread flags) (not (member 'trashed flags)))))
+	'mu4e~headers-msg-unread
 	backwards)
     (mu4e-message (format "No %s unread message found"
 		    (if backwards "previous" "next")))))
@@ -1644,6 +1647,85 @@ other windows."
     ;; to the main view
     (kill-buffer)
     (mu4e~main-view)))
+
+(defun mu4e-headers-toggle-thread-folding (&optional subthread fold-and-move)
+      "Checks if the thread at point is folded or not and toggles its
+folding state. Folding is achieved using overlays and the
+invisible property. With the optional argument SUBTHREAD it only
+folds the subthread and not the whole thread. With the optional
+argument FOLD-AND-MOVE it moves to the next thread after
+folding."
+      (interactive "P")
+      (let ((last-marked-point (point)) ; Hold our starting position
+            (first-marked-point)
+            (msg-count 0)               ; Count folded messages
+            (unread-msg-count 0)        ; Count unread folded messages
+            (folded))
+        (save-excursion
+          (end-of-line)
+          (let ((overlays (overlays-at (+ (point) 1))))
+            (while overlays
+              (let ((o (car overlays)))
+                ;; If folded unfold it
+                (when (overlay-get o 'mu4e-folded-thread)
+                  (delete-overlay o) ; Deleting the overlay removes all its
+                                     ; properties
+                  (goto-char (last-marked-point)) ; Return to where we started
+                                                  ; form
+                  (setq folded t)
+                  ;; exit the loop
+                  (setq overlays '(t))))
+              (setq overlays (cdr overlays))))
+          ;; If we found something to unfold ignore
+          (unless folded
+            ;; note: the thread id is shared by all messages in a thread
+            (let* ((msg (mu4e-message-at-point))
+                   (thread-id (mu4e~headers-get-thread-info msg 'thread-id))
+                   (path (mu4e~headers-get-thread-info msg 'path)))
+              (if subthread
+                  (mu4e-headers-for-each
+                   (lambda (mymsg)
+                     (when (string-match (concat "^" path)
+                                         (mu4e~headers-get-thread-info mymsg 'path))
+                       (setq msg-count (+ msg-count 1))
+                       (when (mu4e~headers-msg-unread mymsg)
+                           (setq unread-msg-count (+ unread-msg-count 1)))
+                       (end-of-line)
+                       ;; We need to move one point left to avoid weird
+                       ;; behavior, I think this is happening because
+                       ;; (end-of-line) takes us after the linebreak.
+                       (setq last-marked-point (- (point) 1))
+                       (unless first-marked-point
+                         (setq first-marked-point last-marked-point)))))
+                (mu4e-headers-for-each
+                 (lambda (mymsg)
+                   (when (string= thread-id
+                                  (mu4e~headers-get-thread-info mymsg 'thread-id))
+                     (end-of-line)
+                     (setq msg-count (+ msg-count 1))
+                     (when (mu4e~headers-msg-unread mymsg)
+                       (setq unread-msg-count (+ unread-msg-count 1)))
+                     (setq last-marked-point (- (point) 1))
+                     (unless first-marked-point
+                       (setq first-marked-point last-marked-point)))))))))
+        ;; If thread was not folded and contains more than one messages fold it
+        (if (and (not folded) (/= first-marked-point last-marked-point))
+          (let ((o (make-overlay first-marked-point last-marked-point)))
+            (overlay-put o 'mu4e-folded-thread t) ; Mark it as folded
+            (if (/= unread-msg-count 0)
+                (overlay-put o 'display (format " +%d(%d)" msg-count unread-msg-count))
+              (overlay-put o 'display (format " +%d" msg-count)))
+            (overlay-put o 'evaporate t)
+            (overlay-put o 'invisible t) ; Make it disappear
+            (if fold-and-move            ; Move to next thread?
+                (progn (goto-char last-marked-point)
+                       (mu4e-headers-next))
+              ;; If not take us to the first message in the folded thread
+              (progn (goto-char first-marked-point)
+                     (beginning-of-line))))
+          (when fold-and-move            ; Move to next thread?
+            (progn (goto-char last-marked-point)
+                   (mu4e-headers-next))))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 (provide 'mu4e-headers)
