@@ -1,0 +1,7 @@
+#!/bin/bash
+
+if [[ ! `find . -name 'mu4e-meta.el'` ]]
+then
+  autoreconf -i && ./configure && make
+
+fi
